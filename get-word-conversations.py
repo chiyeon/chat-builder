@@ -7,6 +7,7 @@ import re
 import os
 import json
 import random
+import time
 
 if len(sys.argv) < 2:
 	print(f"usage: {sys.argv[0]} CONFIG.JSON", file=sys.stderr)
@@ -23,6 +24,9 @@ outfile = tempdir + "/tmp-" + config['name'] + "-conv.txt"
 exwords_re = '(' + '|'.join(config['exclude']) + ')' if 'exclude' in config else None
 
 words_count = {}
+
+character_limit = int(config['character_limit']) if 'character_limit' in config else 0
+character_minimum = int(config['character_minimum']) if 'character_minimum' in config else 0
 
 for word in config['words']:
 	words_count[word] = 0
@@ -46,20 +50,29 @@ if model is None:
 random.shuffle(config['words'])
 
 response_must_match = '(' + '|'.join(config['response_must_match']) + ')' if 'respose_must_match' in config else None
-response_must_not_match = '(' + '|'.join(config['response_must_not_match']) + ')' if 'respose_must_not_match' in config else None
+response_must_not_match = '(' + '|'.join(config['response_must_not_match']) + ')' if 'response_must_not_match' in config else None
 
 for word in config['words']:
 	if words_count[word] > 0:
 		print(f"skipping {word}", file=sys.stderr)
 		continue
 	print(f"processing {word}", file=sys.stderr)
-	p = Popen(["./main", "--log-disable", "--escape", "-m", model, "-p",  prompt.format(word = word)], stdout=PIPE, stderr=DEVNULL, encoding="utf-8")
+	args = ["./main", "--log-disable", "--escape", "-m", model, "-p", prompt.format(word = word)] + sys.argv[2:]
+	p = Popen(args, stdout=PIPE, stderr=DEVNULL, encoding="utf-8")
 
 	lines = []
 
+	start_time = time.time()
+
 	n = 0	
 	for line in p.stdout:
+		if time.time() - start_time > 5:
+			print(f"Timed out on word {word}, skipping...")
+			lines = []
+			break
 		line = line.rstrip()
+
+		print(f"\t\ton line {n}", file=sys.stderr)
 
 		if ( n := n + 1) == 1:
 			continue
@@ -71,7 +84,8 @@ for word in config['words']:
 
 		if n == 3:
 			if response_must_match is not None:
-				if not re.search(must_match, line):
+				if not re.search(response_must_match, line):
+					print(f"\tdidn't have valid response: {line}", file=sys.stderr)
 					lines = []
 					break
 			if "simple_response" in config:
@@ -79,28 +93,41 @@ for word in config['words']:
 				if m:
 					line = line[:m.start(1)] + '.'
 					if line.find('sorry.') > 0:
-						print(f"too short line {line}", file=sys.stderr)
+						print(f"\ttoo short line {line}", file=sys.stderr)
 						lines = []
 						break
 					else:
-						print(f"not match {line}", file=sys.stderr)
+					    pass
+						#print(f"not match {line}", file=sys.stderr)
+						#print("reason: bc failed to find sorry. at the end", file=sys.stderr)
 				else:
-					print(f"not match {line}", file=sys.stderr)
+					pass
+					#print(f"not match {line}", file=sys.stderr)
 			if response_must_not_match is not None:
-				if re.search(must_match, line):
+				if re.search(response_must_not_match, line):
+					print(f"\thas invalid response: {line}", file=sys.stderr)
 					lines = []
 					break
+			if character_limit != 0 and len(line) > character_limit:
+				print(f"\texceeds character limit ({character_limit}): {line}", file=sys.stderr)
+				lines = []
+				break
+			if character_minimum != 0 and len(line) < character_minimum:
+				print(f"\ttoo short a response (less than {character_minimum}): {line}", file=sys.stderr)
+				lines = []
+				break
 
-		if n == 4 and "simple_response" in config:
+
+		if n >= 4 and "simple_response" in config:
 			break
 
 		if line.find(':') < 0:
-			print(f"ending early {word} with: {line}", file=sys.stderr)
+			print(f"\tending early {word} with: {line}", file=sys.stderr)
 			lines = []
 			break
 
 		if exwords_re is not None and re.search(exwords_re, line, re.IGNORECASE):
-			print(f"has excluded word {word}", file=sys.stderr)
+			print(f"\thas excluded word {word}", file=sys.stderr)
 			lines = []
 			break
 
